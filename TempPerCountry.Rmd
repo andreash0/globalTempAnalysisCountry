@@ -96,7 +96,10 @@ res = xtractor$results %>% gather(key = "key", value = "value", -Country) %>%
   separate(key, c("key", "year")) %>% select(Country, year, key, value) %>% 
   as.data.frame()
 res$value[is.infinite(res$value)] <- NA 
-res %>% slice(1:20) %>% kable(col.names = c("Country", "Year", "Key", "Value")) %>% 
+
+res_new = res %>% spread("key", "value") %>% select_("Country", "year", "mean", "sd", "min", "max")
+
+res_new %>% slice(1:20) %>% kable(col.names = c("Country", "Year", "Mean", "SD", "Min", "Max")) %>% 
     kable_styling() %>%
     scroll_box(width = "100%", height = "400px")
 
