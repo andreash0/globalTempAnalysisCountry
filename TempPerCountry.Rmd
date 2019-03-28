@@ -1,0 +1,189 @@
+---
+title: "Analysis of the global temperature development at country level"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction 
+
+For this analysis we are using the Climate Change: Earth Surface Temperature Data from kaggle.
+This data set can be found here: 
+https://www.kaggle.com/berkeleyearth/climate-change-earth-surface-temperature-data#GlobalLandTemperaturesByCountry.csv
+
+The goal is to show how the fxtract package can support climate and economical analysis.
+
+### Load required packages
+```{r, message=FALSE}
+library(fxtract)
+library(lubridate)
+library(tidyverse)
+library(stringr)
+```
+
+### Read in data
+```{r}
+df_glob_temp = read.csv("GlobalLandTemperaturesByCountry.csv")
+str(df_glob_temp)
+```
+
+### Data preprocessing
+For our analysis we consider only years since 1900. 
+The main reason for this is that in recent years we have had many missing values for some countries.
+```{r}
+df_glob_temp$dt = as.Date(df_glob_temp$dt)
+df1900_raw = df_glob_temp %>% filter(dt >= "1900-01-01")
+```
+
+Removal of duplicates and some smaller regions.
+```{r}
+df1900 = df1900_raw %>% filter(!Country %in% c('Denmark', 'Antarctica', 'France', 'Europe', 'Netherlands',
+  'United Kingdom', 'South America', 'Ã…land', 'Africa',  'Asia', 'Baker Island', 'Curaçao', 'Kingman Reef', 'North America', 'Oceania', 
+  'Palmyra Atoll', 'Saint Barthélemy', 'Saint Martin', 'Virgin Islands'))
+df1900$Country = gsub("\\(Europe)", "", df1900$Country)
+```
+
+For an annual view we would like to have the year in a separate column.
+```{r}
+df1900$year = year(df1900$dt)
+```
+
+
+## fxtract
+
+### Create our user defined-functions
+```{r, message=FALSE}
+temp_stats = function(data) {
+  allYears = unique(data$year)
+  data = data %>% group_by(year) %>%
+    summarise(
+      mean = mean(AverageTemperature, na.rm = T),
+      sd = sd(AverageTemperature, na.rm = T),
+      min = min(AverageTemperature, na.rm = T),
+      max = max(AverageTemperature, na.rm = T)
+    )
+  data = data %>% as.data.frame()
+  res = c(mean = data$mean,
+     sd = data$sd,
+     min = data$min,
+     max = data$max)
+  allYears = unique(df1900$year)
+  newnames = c(paste0("mean_", allYears), 
+    paste0("sd_", allYears), 
+    paste0("min_", allYears), 
+    paste0("max_", allYears)) 
+  names(res) = newnames
+  res
+}
+```
+
+### Setup and calculation
+```{r, message=FALSE, results='hide', warning=FALSE}
+xtractor = Xtractor$new("xtractor")
+xtractor$n_cores = 2
+xtractor$add_data(df1900, group_by = "Country")
+xtractor$add_feature(temp_stats)
+xtractor$calc_features()
+```
+
+### Results
+```{r, results='asis', message=FALSE, warning=FALSE}
+library(knitr)
+library(kableExtra)
+res = xtractor$results %>% gather(key = "key", value = "value", -Country) %>% 
+  separate(key, c("key", "year")) %>% select(Country, year, key, value) %>% 
+  as.data.frame()
+res$value[is.infinite(res$value)] <- NA 
+res %>% slice(1:20) %>% kable(col.names = c("Country", "Year", "Key", "Value")) %>% 
+    kable_styling() %>%
+    scroll_box(width = "100%", height = "400px")
+
+```
+
+### Visualization
+```{r, echo=FALSE}
+df_sub = res %>% filter(Country %in% c("Argentina", "Congo", "Germany", "United States", "Australia"),
+  key == "mean")
+df_sub$year = as.numeric(df_sub$year)
+ggplot(df_sub, aes(x=year, y = value, col = Country)) + geom_point() +
+  geom_smooth(method = "loess") +
+  scale_x_continuous(breaks = seq(1900, 2015, by = 20)) +
+  ggtitle("Development of average global temperature") + 
+  labs(x = "Year", y = "Average temperature [in °C]") +
+  theme_bw()
+```
+
+
+### Linear Regression with fxtract
+
+#### User defined functions
+
+```{r}
+limo_slope = function(data){
+  lin_model = lm(temp ~ year, data = data)
+  slope = lin_model$coefficients[[2]]
+  c("slope" = slope)
+}
+```
+
+
+#### Setup and calculation
+
+```{r, message=FALSE, results='hide', warning=FALSE}
+
+df = res %>% filter(key == "mean") %>% select(temp = value, everything())
+df$year = as.numeric(df$year)
+xtractor2 = Xtractor$new("xtractor2")
+xtractor2$n_cores = 2
+xtractor2$add_data(df, group_by = "Country")
+xtractor2$add_feature(limo_slope)
+xtractor2$calc_features()
+res2 = xtractor2$results
+
+```
+
+#### Results
+```{r, echo=FALSE}
+res2 %>% slice(1:20) %>% kable(col.names = c("Country", "Slope")) %>% 
+    kable_styling()  %>%
+    scroll_box(width = "100%", height = "400px")
+```
+
+<br/><br/>
+
+#### Visualization
+
+For a better overview, we can then plot our results in a map.
+```{r, message=FALSE,warning=FALSE, echo=F}
+library(plotly)
+library(countrycode)
+
+df2 = res2
+df2$code = countrycode(df2$Country, 'country.name', 'iso3c')
+
+l <- list(color = toRGB("grey"), width = 0.5)
+# specify map projection/options
+g <- list(
+  showframe = FALSE,
+  showcoastlines = FALSE,
+  projection = list(type = 'Mercator')
+)
+
+p <- plot_geo(df2) %>%
+  add_trace(
+    z = ~slope, color = ~slope, colors = 'Reds',
+    text = ~Country, locations = ~code, marker = list(line = l)
+  ) %>%
+  colorbar(title = 'Temperature change', tickprefix = '°C ') %>%
+  layout(
+    title = 'Average temperature change per year since 1900',
+    geo = g
+  )
+p
+```
+
+
+
+
